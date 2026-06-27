@@ -9,7 +9,7 @@ import { ProviderIcon } from "@opencode-ai/ui/provider-icon"
 import { Spinner } from "@opencode-ai/ui/spinner"
 import { TextField } from "@opencode-ai/ui/text-field"
 import { showToast } from "@/utils/toast"
-import { createEffect, createMemo, createResource, Match, onCleanup, onMount, Switch } from "solid-js"
+import { type Accessor, createEffect, createMemo, createResource, Match, onCleanup, onMount, Switch } from "solid-js"
 import { createStore, produce } from "solid-js/store"
 import { Link } from "@/components/link"
 import { useServerSDK } from "@/context/server-sdk"
@@ -17,16 +17,16 @@ import { useServerSync } from "@/context/server-sync"
 import { useLanguage } from "@/context/language"
 import { useProviders } from "@/hooks/use-providers"
 
-export function DialogConnectProvider(props: { provider: string; onComplete?: () => void }) {
+export function DialogConnectProvider(props: { provider: string; onComplete?: () => void; directory?: Accessor<string | undefined> }) {
   const dialog = useDialog()
   const serverSync = useServerSync()
   const serverSDK = useServerSDK()
   const language = useLanguage()
-  const providers = useProviders()
+  const providers = useProviders(props.directory)
 
   const all = () => {
     void import("./dialog-select-provider").then((x) => {
-      dialog.show(() => <x.DialogSelectProvider />)
+      dialog.show(() => <x.DialogSelectProvider directory={props.directory} />)
     })
   }
 
@@ -41,7 +41,7 @@ export function DialogConnectProvider(props: { provider: string; onComplete?: ()
   })
 
   const provider = createMemo(
-    () => providers.all().get(props.provider) ?? serverSync.data.provider.all.get(props.provider)!,
+    () => providers.all().get(props.provider) ?? serverSync().data.provider.all.get(props.provider)!,
   )
   const fallback = createMemo<ProviderAuthMethod[]>(() => [
     {
@@ -52,19 +52,20 @@ export function DialogConnectProvider(props: { provider: string; onComplete?: ()
   const [auth] = createResource(
     () => props.provider,
     async () => {
-      const cached = serverSync.data.provider_auth[props.provider]
+      const cached = serverSync().data.provider_auth[props.provider]
       if (cached) return cached
-      const res = await serverSDK.client.provider.auth()
+      const res = await serverSDK().client.provider.auth()
       if (!alive.value) return fallback()
-      serverSync.set("provider_auth", res.data ?? {})
+      serverSync().set("provider_auth", res.data ?? {})
       return res.data?.[props.provider] ?? fallback()
     },
   )
-  const loading = createMemo(() => auth.loading && !serverSync.data.provider_auth[props.provider])
-  const methods = createMemo(() => auth.latest ?? serverSync.data.provider_auth[props.provider] ?? fallback())
+  const loading = createMemo(() => auth.loading && !serverSync().data.provider_auth[props.provider])
+  const methods = createMemo(() => auth.latest ?? serverSync().data.provider_auth[props.provider] ?? fallback())
   const [store, setStore] = createStore({
     methodIndex: undefined as undefined | number,
     authorization: undefined as undefined | ProviderAuthAuthorization,
+    promptInputs: undefined as undefined | Record<string, string>,
     state: "pending" as undefined | "pending" | "complete" | "error" | "prompt",
     error: undefined as string | undefined,
   })
@@ -73,6 +74,7 @@ export function DialogConnectProvider(props: { provider: string; onComplete?: ()
     | { type: "method.select"; index: number }
     | { type: "method.reset" }
     | { type: "auth.prompt" }
+    | { type: "auth.inputs"; inputs: Record<string, string> }
     | { type: "auth.pending" }
     | { type: "auth.complete"; authorization: ProviderAuthAuthorization }
     | { type: "auth.error"; error: string }
@@ -83,6 +85,7 @@ export function DialogConnectProvider(props: { provider: string; onComplete?: ()
         if (action.type === "method.select") {
           draft.methodIndex = action.index
           draft.authorization = undefined
+          draft.promptInputs = undefined
           draft.state = undefined
           draft.error = undefined
           return
@@ -90,12 +93,19 @@ export function DialogConnectProvider(props: { provider: string; onComplete?: ()
         if (action.type === "method.reset") {
           draft.methodIndex = undefined
           draft.authorization = undefined
+          draft.promptInputs = undefined
           draft.state = undefined
           draft.error = undefined
           return
         }
         if (action.type === "auth.prompt") {
           draft.state = "prompt"
+          draft.error = undefined
+          return
+        }
+        if (action.type === "auth.inputs") {
+          draft.promptInputs = action.inputs
+          draft.state = undefined
           draft.error = undefined
           return
         }
@@ -151,6 +161,15 @@ export function DialogConnectProvider(props: { provider: string; onComplete?: ()
     const method = methods()[index]
     dispatch({ type: "method.select", index })
 
+    if (method.type === "api" && method.prompts?.length) {
+      if (!inputs) {
+        dispatch({ type: "auth.prompt" })
+        return
+      }
+      dispatch({ type: "auth.inputs", inputs })
+      return
+    }
+
     if (method.type === "oauth") {
       if (method.prompts?.length && !inputs) {
         dispatch({ type: "auth.prompt" })
@@ -158,8 +177,8 @@ export function DialogConnectProvider(props: { provider: string; onComplete?: ()
       }
       dispatch({ type: "auth.pending" })
       const start = Date.now()
-      await serverSDK.client.provider.oauth
-        .authorize(
+      await serverSDK()
+        .client.provider.oauth.authorize(
           {
             providerID: props.provider,
             method: index,
@@ -190,7 +209,7 @@ export function DialogConnectProvider(props: { provider: string; onComplete?: ()
     }
   }
 
-  function OAuthPromptsView() {
+  function AuthPromptsView() {
     const [formStore, setFormStore] = createStore({
       value: {} as Record<string, string>,
       index: 0,
@@ -198,8 +217,7 @@ export function DialogConnectProvider(props: { provider: string; onComplete?: ()
 
     const prompts = createMemo<NonNullable<ProviderAuthMethod["prompts"]>>(() => {
       const value = method()
-      if (value?.type !== "oauth") return []
-      return value.prompts ?? []
+      return value?.prompts ?? []
     })
     const matches = (prompt: NonNullable<ReturnType<typeof prompts>[number]>, value: Record<string, string>) => {
       if (!prompt.when) return true
@@ -228,6 +246,10 @@ export function DialogConnectProvider(props: { provider: string; onComplete?: ()
       const next = prompts().findIndex((prompt, i) => i > index && matches(prompt, value))
       if (next !== -1) {
         setFormStore("index", next)
+        return
+      }
+      if (method()?.type === "api") {
+        dispatch({ type: "auth.inputs", inputs: value })
         return
       }
       await selectMethod(store.methodIndex, value)
@@ -331,7 +353,7 @@ export function DialogConnectProvider(props: { provider: string; onComplete?: ()
   })
 
   async function complete() {
-    await serverSDK.client.global.dispose()
+    await serverSDK().client.global.dispose()
     dialog.close()
     props.onComplete?.()
     showToast({
@@ -410,11 +432,12 @@ export function DialogConnectProvider(props: { provider: string; onComplete?: ()
       }
 
       setFormStore("error", undefined)
-      await serverSDK.client.auth.set({
+      await serverSDK().client.auth.set({
         providerID: props.provider,
         auth: {
           type: "api",
           key: apiKey,
+          ...(store.promptInputs ? { metadata: store.promptInputs } : {}),
         },
       })
       await complete()
@@ -481,8 +504,8 @@ export function DialogConnectProvider(props: { provider: string; onComplete?: ()
       }
 
       setFormStore("error", undefined)
-      const result = await serverSDK.client.provider.oauth
-        .callback({
+      const result = await serverSDK()
+        .client.provider.oauth.callback({
           providerID: props.provider,
           method: store.methodIndex,
           code,
@@ -534,8 +557,8 @@ export function DialogConnectProvider(props: { provider: string; onComplete?: ()
 
     onMount(() => {
       void (async () => {
-        const result = await serverSDK.client.provider.oauth
-          .callback({
+        const result = await serverSDK()
+          .client.provider.oauth.callback({
             providerID: props.provider,
             method: store.methodIndex,
           })
@@ -623,7 +646,7 @@ export function DialogConnectProvider(props: { provider: string; onComplete?: ()
                 </div>
               </Match>
               <Match when={store.state === "prompt"}>
-                <OAuthPromptsView />
+                <AuthPromptsView />
               </Match>
               <Match when={store.state === "error"}>
                 <div class="text-14-regular text-text-base">
