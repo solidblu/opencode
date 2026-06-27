@@ -11,7 +11,7 @@ describe("validateCustomProvider", () => {
         name: " Custom Provider ",
         baseURL: "https://api.example.com ",
         apiKey: " {env: CUSTOM_PROVIDER_KEY} ",
-        models: [{ row: "m0", id: " model-a ", name: " Model A ", err: {} }],
+        models: [{ row: "m0", id: " model-a ", name: " Model A ", meta: [], err: {} }],
         headers: [
           { row: "h0", key: " X-Test ", value: " enabled ", err: {} },
           { row: "h1", key: "", value: "", err: {} },
@@ -52,8 +52,8 @@ describe("validateCustomProvider", () => {
         baseURL: "https://api.example.com",
         apiKey: "secret",
         models: [
-          { row: "m0", id: "model-a", name: "Model A", err: {} },
-          { row: "m1", id: "model-a", name: "Model A 2", err: {} },
+          { row: "m0", id: "model-a", name: "Model A", meta: [], err: {} },
+          { row: "m1", id: "model-a", name: "Model A 2", meta: [], err: {} },
         ],
         headers: [
           { row: "h0", key: "Authorization", value: "one", err: {} },
@@ -71,6 +71,7 @@ describe("validateCustomProvider", () => {
     expect(result.models[1]).toEqual({
       id: "provider.custom.error.duplicate",
       name: undefined,
+      meta: [undefined, undefined],
     })
     expect(result.headers[1]).toEqual({
       key: "provider.custom.error.duplicate",

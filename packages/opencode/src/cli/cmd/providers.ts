@@ -241,7 +241,12 @@ export const ProvidersCommand = cmd({
   aliases: ["auth"],
   describe: "manage AI providers and credentials",
   builder: (yargs) =>
-    yargs.command(ProvidersListCommand).command(ProvidersLoginCommand).command(ProvidersLogoutCommand).demandCommand(),
+    yargs
+      .command(ProvidersListCommand)
+      .command(ProvidersLoginCommand)
+      .command(ProvidersLogoutCommand)
+      .command(ProvidersModelsCommand)
+      .demandCommand(),
   async handler() {},
 })
 
@@ -485,6 +490,106 @@ export const ProvidersLoginCommand = effectCmd({
     yield* Effect.orDie(authSvc.set(provider, { type: "api", key: apiKey }))
 
     yield* Prompt.outro("Done")
+  }),
+})
+
+export const ProvidersModelsCommand = effectCmd({
+  command: "models [provider]",
+  describe: "auto-populate models for a custom provider from its /models endpoint",
+  instance: true,
+  builder: (yargs: Argv) =>
+    yargs.positional("provider", {
+      describe: "custom provider id to populate models for",
+      type: "string",
+    }),
+  handler: Effect.fn("Cli.providers.models")(function* (args) {
+    const cfgSvc = yield* Config.Service
+    const authSvc = yield* Auth.Service
+
+    UI.empty()
+    yield* Prompt.intro("Auto-populate models")
+
+    const config = yield* cfgSvc.getGlobal()
+    const customProviders = Object.entries(config.provider ?? {}).filter(
+      ([, p]) => p.npm === "@ai-sdk/openai-compatible" && p.options?.baseURL,
+    )
+
+    if (customProviders.length === 0) {
+      yield* Prompt.log.error("No custom providers with a baseURL found in config")
+      yield* Prompt.outro("Done")
+      return
+    }
+
+    let providerID: string
+    if (args.provider) {
+      if (!customProviders.find(([id]) => id === args.provider)) {
+        return yield* fail(`Unknown custom provider "${args.provider}"`)
+      }
+      providerID = args.provider
+    } else {
+      providerID = yield* promptValue(
+        yield* Prompt.autocomplete({
+          message: "Select provider",
+          maxItems: 8,
+          options: customProviders.map(([id, p]) => ({ value: id, label: p.name ?? id })),
+        }),
+      )
+    }
+
+    const providerConfig = config.provider![providerID]!
+    const baseURL = providerConfig.options!.baseURL!.replace(/\/$/, "")
+
+    const headers: Record<string, string> = { ...(providerConfig.options?.headers ?? {}) }
+    const auth = yield* Effect.orDie(authSvc.get(providerID))
+    if (auth?.type === "api") {
+      headers["Authorization"] = `Bearer ${auth.key}`
+    }
+
+    const spinner = Prompt.spinner()
+    yield* spinner.start(`Fetching ${baseURL}/models...`)
+
+    const items = yield* cliTry("Failed to fetch models: ", async () => {
+      const res = await fetch(`${baseURL}/models`, { headers })
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
+      const data = (await res.json()) as { data?: Array<{ id: string }> }
+      return data?.data ?? []
+    })
+
+    yield* spinner.stop(`Found ${items.length} model${items.length === 1 ? "" : "s"}`)
+
+    if (items.length === 0) {
+      yield* Prompt.log.warn("No models returned by the provider")
+      yield* Prompt.outro("Done")
+      return
+    }
+
+    const existingIDs = new Set(Object.keys(providerConfig.models ?? {}))
+    const newItems = items.filter((m) => !existingIDs.has(m.id))
+
+    if (newItems.length === 0) {
+      yield* Prompt.log.info("All models already present in config — nothing to add")
+      yield* Prompt.outro("Done")
+      return
+    }
+
+    for (const m of newItems) yield* Prompt.log.info(m.id)
+
+    const confirm = yield* Prompt.text({
+      message: `Add ${newItems.length} model${newItems.length === 1 ? "" : "s"} to config? (y/N)`,
+    })
+    if (Option.isNone(confirm) || !/^y(es)?$/i.test(confirm.value ?? "")) {
+      yield* Prompt.outro("Cancelled")
+      return
+    }
+
+    const models = {
+      ...(providerConfig.models ?? {}),
+      ...Object.fromEntries(newItems.map((m) => [m.id, { name: m.id }])),
+    }
+
+    yield* cfgSvc.updateGlobal({ provider: { [providerID]: { ...providerConfig, models } } })
+
+    yield* Prompt.outro(`Added ${newItems.length} model${newItems.length === 1 ? "" : "s"}`)
   }),
 })
 

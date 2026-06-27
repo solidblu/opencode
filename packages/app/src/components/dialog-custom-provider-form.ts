@@ -3,9 +3,42 @@ const OPENAI_COMPATIBLE = "@ai-sdk/openai-compatible"
 
 type Translator = (key: string, vars?: Record<string, string | number | boolean>) => string
 
+export type ModelMetaKey =
+  | "limit.context"
+  | "limit.output"
+  | "limit.input"
+  | "attachment"
+  | "reasoning"
+  | "tool_call"
+  | "temperature"
+  | "cost.input"
+  | "cost.output"
+
+export type ModelMetaField = { key: ModelMetaKey; value: string }
+
+export type ModelMetaOption = {
+  key: ModelMetaKey
+  label: string
+  type: "number" | "boolean"
+  placeholder?: string
+}
+
+export const MODEL_META_OPTIONS: ModelMetaOption[] = [
+  { key: "limit.context", label: "Context window", type: "number", placeholder: "128000" },
+  { key: "limit.output", label: "Max output tokens", type: "number", placeholder: "8192" },
+  { key: "limit.input", label: "Max input tokens", type: "number", placeholder: "128000" },
+  { key: "attachment", label: "Supports attachments", type: "boolean" },
+  { key: "reasoning", label: "Supports reasoning", type: "boolean" },
+  { key: "tool_call", label: "Supports tool calls", type: "boolean" },
+  { key: "temperature", label: "Supports temperature", type: "boolean" },
+  { key: "cost.input", label: "Input cost ($/1M tokens)", type: "number", placeholder: "1.50" },
+  { key: "cost.output", label: "Output cost ($/1M tokens)", type: "number", placeholder: "2.00" },
+]
+
 export type ModelErr = {
   id?: string
   name?: string
+  meta?: Array<string | undefined>
 }
 
 export type HeaderErr = {
@@ -17,6 +50,7 @@ export type ModelRow = {
   row: string
   id: string
   name: string
+  meta: ModelMetaField[]
   err: ModelErr
 }
 
@@ -90,10 +124,19 @@ export function validateCustomProvider(input: ValidateArgs) {
             return undefined
           })()
     const nameError = !m.name.trim() ? input.t("provider.custom.error.required") : undefined
-    return { id: idError, name: nameError }
+    const meta = m.meta.map((f) => {
+      const opt = MODEL_META_OPTIONS.find((o) => o.key === f.key)
+      if (opt?.type === "number" && f.value.trim() && isNaN(Number(f.value))) {
+        return input.t("provider.custom.error.number")
+      }
+      return undefined
+    })
+    return { id: idError, name: nameError, meta }
   })
-  const modelsValid = models.every((m) => !m.id && !m.name)
-  const modelConfig = Object.fromEntries(input.form.models.map((m) => [m.id.trim(), { name: m.name.trim() }]))
+  const modelsValid = models.every((m) => !m.id && !m.name && m.meta.every((e) => !e))
+  const modelConfig = Object.fromEntries(
+    input.form.models.map((m) => [m.id.trim(), { name: m.name.trim(), ...metaToModelEntry(m.meta) }]),
+  )
 
   const seenHeaders = new Set<string>()
   const headers = input.form.headers.map((h) => {
@@ -155,8 +198,41 @@ let row = 0
 
 const nextRow = () => `row-${row++}`
 
-export const modelRow = (): ModelRow => ({ row: nextRow(), id: "", name: "", err: {} })
+export const modelRow = (): ModelRow => ({ row: nextRow(), id: "", name: "", meta: [], err: {} })
 export const headerRow = (): HeaderRow => ({ row: nextRow(), key: "", value: "", err: {} })
+
+function metaToModelEntry(meta: ModelMetaField[]): Record<string, unknown> {
+  const result: Record<string, unknown> = {}
+  for (const { key, value } of meta) {
+    if (!value.trim()) continue
+    const dot = key.indexOf(".")
+    if (dot !== -1) {
+      const ns = key.slice(0, dot)
+      const field = key.slice(dot + 1)
+      const num = Number(value)
+      if (!isNaN(num)) result[ns] = { ...(result[ns] as Record<string, unknown> ?? {}), [field]: num }
+    } else {
+      result[key] = value === "true"
+    }
+  }
+  return result
+}
+
+function parseModelMeta(m: Record<string, unknown>): ModelMetaField[] {
+  const fields: ModelMetaField[] = []
+  const limit = m.limit as { context?: number; output?: number; input?: number } | undefined
+  if (limit?.context != null) fields.push({ key: "limit.context", value: String(limit.context) })
+  if (limit?.output != null) fields.push({ key: "limit.output", value: String(limit.output) })
+  if (limit?.input != null) fields.push({ key: "limit.input", value: String(limit.input) })
+  const cost = m.cost as { input?: number; output?: number } | undefined
+  if (cost?.input != null) fields.push({ key: "cost.input", value: String(cost.input) })
+  if (cost?.output != null) fields.push({ key: "cost.output", value: String(cost.output) })
+  if (m.attachment != null) fields.push({ key: "attachment", value: String(Boolean(m.attachment)) })
+  if (m.reasoning != null) fields.push({ key: "reasoning", value: String(Boolean(m.reasoning)) })
+  if (m.tool_call != null) fields.push({ key: "tool_call", value: String(Boolean(m.tool_call)) })
+  if (m.temperature != null) fields.push({ key: "temperature", value: String(Boolean(m.temperature)) })
+  return fields
+}
 
 type ProviderConfigEntry = {
   name?: string
@@ -175,7 +251,12 @@ export function customProviderFormState(providerID: string, config: ProviderConf
     apiKey: config.env?.[0] ? `{env:${config.env[0]}}` : "",
     models: Object.entries(config.models ?? {})
       .filter(([, m]) => m !== null)
-      .map(([id, m]) => ({ ...modelRow(), id, name: m?.name ?? "" })),
+      .map(([id, m]) => ({
+        ...modelRow(),
+        id,
+        name: m?.name ?? "",
+        meta: parseModelMeta((m ?? {}) as Record<string, unknown>),
+      })),
     headers: Object.entries(rawHeaders ?? {}).map(([key, value]) => ({ ...headerRow(), key, value })),
   }
 }

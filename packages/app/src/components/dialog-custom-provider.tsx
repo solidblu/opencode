@@ -1,4 +1,7 @@
 import { Button } from "@opencode-ai/ui/button"
+import { Icon } from "@opencode-ai/ui/icon"
+import { Switch } from "@opencode-ai/ui/switch"
+import { Tooltip } from "@opencode-ai/ui/tooltip"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { Dialog } from "@opencode-ai/ui/dialog"
 import { IconButton } from "@opencode-ai/ui/icon-button"
@@ -6,13 +9,20 @@ import { ProviderIcon } from "@opencode-ai/ui/provider-icon"
 import { useMutation } from "@tanstack/solid-query"
 import { TextField } from "@opencode-ai/ui/text-field"
 import { showToast } from "@/utils/toast"
-import { type Accessor, batch, For } from "solid-js"
+import { type Accessor, batch, createSignal, For, Show } from "solid-js"
 import { createStore, produce } from "solid-js/store"
 import { Link } from "@/components/link"
 import { useServerSDK } from "@/context/server-sdk"
 import { useServerSync } from "@/context/server-sync"
 import { useLanguage } from "@/context/language"
-import { type FormState, headerRow, modelRow, validateCustomProvider } from "./dialog-custom-provider-form"
+import {
+  type FormState,
+  type ModelMetaKey,
+  headerRow,
+  modelRow,
+  MODEL_META_OPTIONS,
+  validateCustomProvider,
+} from "./dialog-custom-provider-form"
 import { DialogSelectProvider } from "./dialog-select-provider"
 
 type Props = {
@@ -97,11 +107,84 @@ export function DialogCustomProvider(props: Props) {
     })
   }
 
+  const addModelMeta = (modelIdx: number, key: ModelMetaKey) => {
+    const opt = MODEL_META_OPTIONS.find((o) => o.key === key)
+    if (!opt) return
+    setForm(
+      "models",
+      modelIdx,
+      "meta",
+      produce((fields) => fields.push({ key, value: opt.type === "boolean" ? "false" : "" })),
+    )
+  }
+
+  const removeModelMeta = (modelIdx: number, metaIdx: number) => {
+    setForm(
+      "models",
+      modelIdx,
+      "meta",
+      produce((fields) => fields.splice(metaIdx, 1)),
+    )
+  }
+
+  const setModelMeta = (modelIdx: number, metaIdx: number, value: string) => {
+    setForm("models", modelIdx, "meta", metaIdx, "value", value)
+  }
+
   const setHeader = (index: number, key: "key" | "value", value: string) => {
     batch(() => {
       setForm("headers", index, key, value)
       setForm("headers", index, "err", key, undefined)
     })
+  }
+
+  const [isAutoFetching, setIsAutoFetching] = createSignal(false)
+
+  const autoPopulateModels = async () => {
+    const baseURL = form.baseURL.trim()
+    if (!baseURL || isAutoFetching()) return
+    setIsAutoFetching(true)
+    try {
+      const headers: Record<string, string> = {}
+      const apiKey = form.apiKey.trim()
+      if (apiKey && !apiKey.startsWith("{env:")) {
+        headers["Authorization"] = `Bearer ${apiKey}`
+      }
+      for (const h of form.headers) {
+        const key = h.key.trim()
+        const value = h.value.trim()
+        if (key && value) headers[key] = value
+      }
+      const url = `${baseURL.replace(/\/$/, "")}/models`
+      const res = await fetch(url, { headers })
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
+      const data = await res.json()
+      const items: Array<{ id: string }> = data?.data ?? []
+      if (items.length === 0) {
+        showToast({ title: language.t("provider.custom.models.auto.empty") })
+        return
+      }
+      const existingIDs = new Set(form.models.map((m) => m.id.trim()).filter(Boolean))
+      const existingEmpty = form.models.length === 1 && !form.models[0].id.trim()
+      const newItems = items.filter((m) => !existingIDs.has(m.id))
+      const toAdd = newItems.map((m) => ({ ...modelRow(), id: m.id, name: m.id }))
+      if (toAdd.length === 0) {
+        showToast({ title: language.t("provider.custom.models.auto.empty") })
+        return
+      }
+      setForm("models", existingEmpty ? toAdd : [...form.models, ...toAdd])
+      showToast({
+        variant: "success",
+        icon: "circle-check",
+        title: language.t("provider.custom.models.label"),
+        description: `${toAdd.length} model${toAdd.length === 1 ? "" : "s"} added`,
+      })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      showToast({ title: language.t("provider.custom.models.auto.error"), description: message })
+    } finally {
+      setIsAutoFetching(false)
+    }
   }
 
   const validate = () => {
@@ -231,41 +314,120 @@ export function DialogCustomProvider(props: Props) {
           </div>
 
           <div class="flex flex-col gap-3">
-            <label class="text-12-medium text-text-weak">{language.t("provider.custom.models.label")}</label>
+            <div class="flex items-center justify-between">
+              <label class="text-12-medium text-text-weak">{language.t("provider.custom.models.label")}</label>
+              <div class="flex items-center gap-1.5">
+                <Tooltip value={language.t("provider.custom.models.auto.tooltip")} placement="top">
+                  <span class="text-text-weak cursor-default">
+                    <Icon name="help" size="small" />
+                  </span>
+                </Tooltip>
+                <Button
+                  type="button"
+                  size="small"
+                  variant="ghost"
+                  disabled={isAutoFetching() || !form.baseURL.trim()}
+                  onClick={autoPopulateModels}
+                >
+                  {isAutoFetching() ? language.t("provider.custom.models.auto.fetching") : language.t("provider.custom.models.auto")}
+                </Button>
+              </div>
+            </div>
             <For each={form.models}>
               {(m, i) => (
-                <div class="flex gap-2 items-start" data-row={m.row}>
-                  <div class="flex-1">
-                    <TextField
-                      label={language.t("provider.custom.models.id.label")}
-                      hideLabel
-                      placeholder={language.t("provider.custom.models.id.placeholder")}
-                      value={m.id}
-                      onChange={(v) => setModel(i(), "id", v)}
-                      validationState={m.err.id ? "invalid" : undefined}
-                      error={m.err.id}
+                <div class="flex flex-col gap-1.5" data-row={m.row}>
+                  <div class="flex gap-2 items-start">
+                    <div class="flex-1">
+                      <TextField
+                        label={language.t("provider.custom.models.id.label")}
+                        hideLabel
+                        placeholder={language.t("provider.custom.models.id.placeholder")}
+                        value={m.id}
+                        onChange={(v) => setModel(i(), "id", v)}
+                        validationState={m.err.id ? "invalid" : undefined}
+                        error={m.err.id}
+                      />
+                    </div>
+                    <div class="flex-1">
+                      <TextField
+                        label={language.t("provider.custom.models.name.label")}
+                        hideLabel
+                        placeholder={language.t("provider.custom.models.name.placeholder")}
+                        value={m.name}
+                        onChange={(v) => setModel(i(), "name", v)}
+                        validationState={m.err.name ? "invalid" : undefined}
+                        error={m.err.name}
+                      />
+                    </div>
+                    <IconButton
+                      type="button"
+                      icon="trash"
+                      variant="ghost"
+                      class="mt-1.5"
+                      onClick={() => removeModel(i())}
+                      disabled={form.models.length <= 1}
+                      aria-label={language.t("provider.custom.models.remove")}
                     />
                   </div>
-                  <div class="flex-1">
-                    <TextField
-                      label={language.t("provider.custom.models.name.label")}
-                      hideLabel
-                      placeholder={language.t("provider.custom.models.name.placeholder")}
-                      value={m.name}
-                      onChange={(v) => setModel(i(), "name", v)}
-                      validationState={m.err.name ? "invalid" : undefined}
-                      error={m.err.name}
-                    />
-                  </div>
-                  <IconButton
-                    type="button"
-                    icon="trash"
-                    variant="ghost"
-                    class="mt-1.5"
-                    onClick={() => removeModel(i())}
-                    disabled={form.models.length <= 1}
-                    aria-label={language.t("provider.custom.models.remove")}
-                  />
+                  <Show when={m.meta.length > 0}>
+                    <div class="flex flex-col gap-1.5 pl-1">
+                      <For each={m.meta}>
+                        {(field, fi) => {
+                          const opt = MODEL_META_OPTIONS.find((o) => o.key === field.key)!
+                          return (
+                            <div class="flex items-center gap-2">
+                              <span class="text-11-regular text-text-weak w-[140px] shrink-0">{opt.label}</span>
+                              <Show
+                                when={opt.type === "boolean"}
+                                fallback={
+                                  <div class="flex-1">
+                                    <TextField
+                                      label={opt.label}
+                                      hideLabel
+                                      placeholder={opt.placeholder ?? ""}
+                                      value={field.value}
+                                      onChange={(v) => setModelMeta(i(), fi(), v)}
+                                      validationState={m.err.meta?.[fi()] ? "invalid" : undefined}
+                                      error={m.err.meta?.[fi()]}
+                                    />
+                                  </div>
+                                }
+                              >
+                                <Switch
+                                  checked={field.value === "true"}
+                                  onChange={(v) => setModelMeta(i(), fi(), String(v))}
+                                />
+                              </Show>
+                              <IconButton
+                                type="button"
+                                icon="close-small"
+                                variant="ghost"
+                                onClick={() => removeModelMeta(i(), fi())}
+                                aria-label="Remove property"
+                              />
+                            </div>
+                          )
+                        }}
+                      </For>
+                    </div>
+                  </Show>
+                  <Show when={m.meta.length < MODEL_META_OPTIONS.length}>
+                    <select
+                      class="self-start text-12-regular text-text-weak bg-transparent cursor-pointer focus:outline-none"
+                      onChange={(e) => {
+                        const key = e.currentTarget.value as ModelMetaKey
+                        if (key) {
+                          addModelMeta(i(), key)
+                          e.currentTarget.value = ""
+                        }
+                      }}
+                    >
+                      <option value="">{language.t("provider.custom.models.addProp")}</option>
+                      <For each={MODEL_META_OPTIONS.filter((o) => !m.meta.some((f) => f.key === o.key))}>
+                        {(opt) => <option value={opt.key}>{opt.label}</option>}
+                      </For>
+                    </select>
+                  </Show>
                 </div>
               )}
             </For>
