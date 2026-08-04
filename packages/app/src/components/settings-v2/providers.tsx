@@ -184,7 +184,7 @@ export const SettingsProvidersV2: Component = () => {
                               dialog.show(() => (
                                 <DialogCustomProvider
                                   back="close"
-                                  initialConfig={customProviderFormState(item.id, serverSync.data.config.provider?.[item.id])}
+                                  initialConfig={customProviderFormState(item.id, serverSync().data.config.provider?.[item.id])}
                                   originalProviderID={item.id}
                                 />
                               ))
