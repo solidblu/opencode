@@ -86,6 +86,10 @@ import type {
   GlobalEventResponses,
   GlobalHealthErrors,
   GlobalHealthResponses,
+  GlobalProjectConfigGetErrors,
+  GlobalProjectConfigGetResponses,
+  GlobalProjectConfigUpdateErrors,
+  GlobalProjectConfigUpdateResponses,
   GlobalUpgradeErrors,
   GlobalUpgradeResponses,
   InstanceDisposeErrors,
@@ -1315,6 +1319,70 @@ export class Config extends HeyApiClient {
   }
 }
 
+export class ProjectConfig extends HeyApiClient {
+  /**
+   * Get project configuration file
+   *
+   * Read a project's opencode config file without starting an instance for it.
+   */
+  public get<ThrowOnError extends boolean = false>(
+    parameters: {
+      directory: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "query", key: "directory" }] }])
+    return (options?.client ?? this.client).get<
+      GlobalProjectConfigGetResponses,
+      GlobalProjectConfigGetErrors,
+      ThrowOnError
+    >({
+      url: "/global/project-config",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Update project configuration file
+   *
+   * Patch a project's opencode config file and reload that project's instance if one is running.
+   */
+  public update<ThrowOnError extends boolean = false>(
+    parameters: {
+      directory: string
+      config?: Config3
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { key: "config", map: "body" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).patch<
+      GlobalProjectConfigUpdateResponses,
+      GlobalProjectConfigUpdateErrors,
+      ThrowOnError
+    >({
+      url: "/global/project-config",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+}
+
 export class Global extends HeyApiClient {
   /**
    * Get health
@@ -1379,6 +1447,11 @@ export class Global extends HeyApiClient {
   private _config?: Config
   get config(): Config {
     return (this._config ??= new Config({ client: this.client }))
+  }
+
+  private _projectConfig?: ProjectConfig
+  get projectConfig(): ProjectConfig {
+    return (this._projectConfig ??= new ProjectConfig({ client: this.client }))
   }
 }
 

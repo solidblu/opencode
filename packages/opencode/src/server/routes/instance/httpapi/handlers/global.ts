@@ -4,6 +4,7 @@ import { EffectBridge } from "@/effect/bridge"
 import { EventV2 } from "@opencode-ai/core/event"
 import { Installation } from "@/installation"
 import { disposeAllInstancesAndEmitGlobalDisposed } from "@/server/global-lifecycle"
+import { InstanceStore } from "@/project/instance-store"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import { Effect, Queue } from "effect"
 import * as Stream from "effect/Stream"
@@ -81,6 +82,22 @@ export const globalHandlers = HttpApiBuilder.group(RootHttpApi, "global", (handl
       return result.info
     })
 
+    const projectConfigGet = Effect.fn("GlobalHttpApi.projectConfigGet")(function* (ctx) {
+      return yield* config.readProject(ctx.query.directory)
+    })
+
+    const projectConfigUpdate = Effect.fn("GlobalHttpApi.projectConfigUpdate")(function* (ctx) {
+      const result = yield* config.updateProject(ctx.query.directory, ctx.payload)
+      // Only the touched project reloads, and the caller does not wait for it.
+      bridge.fork(
+        Effect.gen(function* () {
+          const store = yield* InstanceStore.Service
+          yield* store.disposeDirectory(ctx.query.directory)
+        }).pipe(Effect.catchCause((cause) => Effect.logWarning("project disposal failed", { cause }))),
+      )
+      return result
+    })
+
     const dispose = Effect.fn("GlobalHttpApi.dispose")(function* () {
       yield* disposeAllInstancesAndEmitGlobalDisposed()
       return true
@@ -120,6 +137,8 @@ export const globalHandlers = HttpApiBuilder.group(RootHttpApi, "global", (handl
       .handleRaw("event", event)
       .handle("configGet", configGet)
       .handle("configUpdate", configUpdate)
+      .handle("projectConfigGet", projectConfigGet)
+      .handle("projectConfigUpdate", projectConfigUpdate)
       .handle("dispose", dispose)
       .handle("upgrade", upgrade)
   }),

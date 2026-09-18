@@ -128,6 +128,8 @@ export interface Interface {
   readonly getConsoleState: () => Effect.Effect<ConsoleState>
   readonly update: (config: Info) => Effect.Effect<void>
   readonly updateGlobal: (config: Info) => Effect.Effect<{ info: Info; changed: boolean }>
+  readonly readProject: (directory: string) => Effect.Effect<ProjectConfig>
+  readonly updateProject: (directory: string, config: Info) => Effect.Effect<ProjectConfig>
   readonly invalidate: () => Effect.Effect<void>
   readonly directories: () => Effect.Effect<string[]>
   readonly waitForDependencies: () => Effect.Effect<void>
@@ -136,6 +138,27 @@ export interface Interface {
 export class Service extends Context.Service<Service, Interface>()("@opencode/Config") {}
 
 export const use = serviceUse(Service)
+
+export type ProjectConfig = { file: string; config: Record<string, unknown> }
+
+// Schema decoding normalizes agents by adding empty `options`/`permission`; drop them so files stay clean.
+function cleanAgents(agent: Info["agent"]) {
+  if (!agent) return agent
+  return Object.fromEntries(
+    Object.entries(agent).map(([name, entry]) => {
+      if (!entry) return [name, entry]
+      const { options, permission, ...rest } = entry
+      return [
+        name,
+        {
+          ...rest,
+          ...(options && Object.keys(options).length ? { options } : {}),
+          ...(permission && Object.keys(permission).length ? { permission } : {}),
+        },
+      ]
+    }),
+  ) as Info["agent"]
+}
 
 function globalConfigFile() {
   const candidates = ["opencode.jsonc", "opencode.json", "config.json"].map((file) =>
@@ -643,18 +666,44 @@ const layer = Layer.effect(
       )
     })
 
-    const update = Effect.fn("Config.update")(function* (config: Info) {
-      const dir = yield* InstanceState.directory
-      const file = path.join(dir, "config.json")
+    // Project config lives in the files the loader actually reads; prefer an existing one, else create .opencode/opencode.json.
+    const projectConfigFiles = ["opencode.jsonc", "opencode.json", ".opencode/opencode.jsonc", ".opencode/opencode.json"]
+
+    const projectConfigFile = (directory: string) => {
+      const candidates = projectConfigFiles.map((name) => path.join(directory, name))
+      return candidates.find((candidate) => existsSync(candidate)) ?? candidates[candidates.length - 1]
+    }
+
+    const readProject = Effect.fn("Config.readProject")(function* (directory: string) {
+      const file = projectConfigFile(directory)
+      const text = yield* readConfigFile(file)
+      const parsed = text ? ConfigParse.jsonc(text, file) : {}
+      return { file: path.relative(directory, file), config: isRecord(parsed) ? parsed : {} }
+    })
+
+    const updateProject = Effect.fn("Config.updateProject")(function* (directory: string, config: Info) {
+      const file = projectConfigFile(directory)
       const existing = yield* loadFile(file)
       const text = yield* readConfigFile(file)
+      const patch = writable(config)
+      if ("agent" in patch) patch.agent = cleanAgents(patch.agent)
+      if (file.endsWith(".jsonc")) {
+        // Edit in place so comments survive.
+        let updated = patchJsonc(text ?? "{}", patch)
+        if ("agent" in patch) updated = replaceJsonc(updated, ["agent"], patch.agent)
+        yield* fs.writeWithDirs(file, updated).pipe(Effect.orDie)
+        return yield* readProject(directory)
+      }
       const original = text ? ConfigParse.jsonc(text, file) : writable(existing)
-      yield* fs
-        .writeFileString(
-          file,
-          JSON.stringify(mergeDeep(isRecord(original) ? original : writable(existing), writable(config)), null, 2),
-        )
-        .pipe(Effect.orDie)
+      const merged = mergeDeep(isRecord(original) ? original : writable(existing), patch) as Record<string, unknown>
+      // The agent record is authoritative when explicitly set so entries and fields can be removed.
+      if ("agent" in patch) merged.agent = patch.agent
+      yield* fs.writeWithDirs(file, JSON.stringify(merged, null, 2)).pipe(Effect.orDie)
+      return yield* readProject(directory)
+    })
+
+    const update = Effect.fn("Config.update")(function* (config: Info) {
+      yield* updateProject(yield* InstanceState.directory, config)
     })
 
     const invalidate = Effect.fn("Config.invalidate")(function* () {
@@ -665,6 +714,7 @@ const layer = Layer.effect(
       const file = globalConfigFile()
       const before = (yield* readConfigFile(file)) ?? "{}"
       const patch = writableGlobal(config)
+      if ("agent" in patch) patch.agent = cleanAgents(patch.agent)
 
       let next: Info
       let changed: boolean
@@ -679,6 +729,8 @@ const layer = Layer.effect(
           if (patchProvider.options && "headers" in patchProvider.options)
             merged.provider[id].options = { ...merged.provider[id].options, headers: patchProvider.options.headers }
         }
+        // The agent record is authoritative when explicitly set so entries and fields can be removed.
+        if ("agent" in patch) merged.agent = patch.agent
         const serialized = JSON.stringify(merged, null, 2)
         next = yield* decodeConfig(merged, file)
         changed = serialized !== before
@@ -692,6 +744,7 @@ const layer = Layer.effect(
           if (patchProvider.options && "headers" in patchProvider.options)
             updated = replaceJsonc(updated, ["provider", id, "options", "headers"], patchProvider.options.headers)
         }
+        if ("agent" in patch) updated = replaceJsonc(updated, ["agent"], patch.agent)
         next = yield* decodeConfig(ConfigParse.jsonc(updated, file), file)
         changed = updated !== before
         if (changed) yield* fs.writeFileString(file, updated).pipe(Effect.orDie)
@@ -707,6 +760,8 @@ const layer = Layer.effect(
       getConsoleState,
       update,
       updateGlobal,
+      readProject,
+      updateProject,
       invalidate,
       directories,
       waitForDependencies,

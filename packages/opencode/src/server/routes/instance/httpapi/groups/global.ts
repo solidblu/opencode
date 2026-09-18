@@ -65,10 +65,17 @@ const GlobalUpgradeResult = Schema.Union([
   }),
 ])
 
+const ProjectConfigQuery = Schema.Struct({ directory: Schema.String })
+const ProjectConfigInfo = Schema.Struct({
+  file: Schema.String,
+  config: Schema.Record(Schema.String, Schema.Unknown),
+})
+
 export const GlobalPaths = {
   health: "/global/health",
   event: "/global/event",
   config: "/global/config",
+  projectConfig: "/global/project-config",
   dispose: "/global/dispose",
   upgrade: "/global/upgrade",
 } as const
@@ -112,6 +119,28 @@ export const GlobalApi = HttpApi.make("global").add(
           identifier: "global.config.update",
           summary: "Update global configuration",
           description: "Update global OpenCode configuration settings and preferences.",
+        }),
+      ),
+      HttpApiEndpoint.get("projectConfigGet", GlobalPaths.projectConfig, {
+        query: ProjectConfigQuery,
+        success: described(ProjectConfigInfo, "Raw project config file"),
+      }).annotateMerge(
+        OpenApi.annotations({
+          identifier: "global.projectConfig.get",
+          summary: "Get project configuration file",
+          description: "Read a project's opencode config file without starting an instance for it.",
+        }),
+      ),
+      HttpApiEndpoint.patch("projectConfigUpdate", GlobalPaths.projectConfig, {
+        query: ProjectConfigQuery,
+        payload: ConfigV1.Info,
+        success: described(ProjectConfigInfo, "Updated project config file"),
+        error: HttpApiError.BadRequest,
+      }).annotateMerge(
+        OpenApi.annotations({
+          identifier: "global.projectConfig.update",
+          summary: "Update project configuration file",
+          description: "Patch a project's opencode config file and reload that project's instance if one is running.",
         }),
       ),
       HttpApiEndpoint.post("dispose", GlobalPaths.dispose, {

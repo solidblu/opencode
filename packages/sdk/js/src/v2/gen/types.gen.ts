@@ -7329,6 +7329,71 @@ export type GlobalConfigUpdateResponses = {
 
 export type GlobalConfigUpdateResponse = GlobalConfigUpdateResponses[keyof GlobalConfigUpdateResponses]
 
+export type GlobalProjectConfigGetData = {
+  body?: never
+  path?: never
+  query: {
+    directory: string
+  }
+  url: "/global/project-config"
+}
+
+export type GlobalProjectConfigGetErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type GlobalProjectConfigGetError = GlobalProjectConfigGetErrors[keyof GlobalProjectConfigGetErrors]
+
+export type GlobalProjectConfigGetResponses = {
+  /**
+   * Raw project config file
+   */
+  200: {
+    file: string
+    config: {
+      [key: string]: unknown
+    }
+  }
+}
+
+export type GlobalProjectConfigGetResponse = GlobalProjectConfigGetResponses[keyof GlobalProjectConfigGetResponses]
+
+export type GlobalProjectConfigUpdateData = {
+  body?: Config
+  path?: never
+  query: {
+    directory: string
+  }
+  url: "/global/project-config"
+}
+
+export type GlobalProjectConfigUpdateErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+}
+
+export type GlobalProjectConfigUpdateError = GlobalProjectConfigUpdateErrors[keyof GlobalProjectConfigUpdateErrors]
+
+export type GlobalProjectConfigUpdateResponses = {
+  /**
+   * Updated project config file
+   */
+  200: {
+    file: string
+    config: {
+      [key: string]: unknown
+    }
+  }
+}
+
+export type GlobalProjectConfigUpdateResponse =
+  GlobalProjectConfigUpdateResponses[keyof GlobalProjectConfigUpdateResponses]
+
 export type GlobalDisposeData = {
   body?: never
   path?: never

@@ -10,7 +10,9 @@
     "servers": {
       "modern": {
         "type": "local",
-        "command": ["modern-mcp"],
+        "command": [
+          "modern-mcp"
+        ],
         "disabled": false
       }
     },
@@ -24,9 +26,7 @@
   },
   "agent": {
     "reviewer": {
-      "disable": true,
-      "options": {},
-      "permission": {}
+      "disable": true
     }
   }
 }

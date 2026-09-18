@@ -363,12 +363,12 @@ it.instance("updates config and preserves empty shell sentinel", () =>
     yield* writeConfigEffect(
       test.directory,
       { $schema: "https://opencode.ai/config.json", shell: "bash" },
-      "config.json",
+      "opencode.json",
     )
 
     yield* Config.Service.use((svc) => svc.update(ConfigParse.schema(ConfigV1.Info, { shell: "" }, "test:config")))
 
-    const writtenConfig = yield* FSUtil.use.readJson(path.join(test.directory, "config.json"))
+    const writtenConfig = yield* FSUtil.use.readJson(path.join(test.directory, "opencode.json"))
     expect(writtenConfig).toMatchObject({ shell: "" })
   }),
 )
@@ -468,7 +468,7 @@ for (const input of projectInputs) {
     Effect.gen(function* () {
       const instance = yield* TestInstance
       const fs = yield* FSUtil.Service
-      const file = path.join(instance.directory, "config.json")
+      const file = path.join(instance.directory, "opencode.json")
       yield* fs.writeFileString(file, yield* fs.readFileString(path.join(updateFixtures, input)))
       const patch = ConfigParse.schema(ConfigV1.Info, yield* fs.readJson(`${prefix}-patch.json`), input)
       yield* Config.use.update(patch)
@@ -507,11 +507,58 @@ for (const name of ["opencode.json", "opencode.jsonc"]) {
   )
 }
 
+it.instance("creates .opencode/opencode.json when no project config exists and replaces agent record", () =>
+  Effect.gen(function* () {
+    const instance = yield* TestInstance
+    const fs = yield* FSUtil.Service
+    const file = path.join(instance.directory, ".opencode", "opencode.json")
+    yield* Config.use.update({ agent: { reviewer: { mode: "subagent", temperature: 0.2 }, docs: {} } })
+    expect(yield* fs.readJson(file)).toMatchObject({
+      agent: { reviewer: { mode: "subagent", temperature: 0.2 }, docs: {} },
+    })
+    yield* Config.use.update({ agent: { reviewer: { mode: "subagent" } } })
+    expect(yield* fs.readJson(file)).toMatchObject({ agent: { reviewer: { mode: "subagent" } } })
+    expect(Object.keys(((yield* fs.readJson(file)) as { agent: object }).agent)).toEqual(["reviewer"])
+  }),
+)
+
+it.instance("readProject and updateProject work without an instance and keep agent entries clean", () =>
+  Effect.gen(function* () {
+    const instance = yield* TestInstance
+    const fs = yield* FSUtil.Service
+    const dir = path.join(instance.directory, "other-project")
+    yield* fs.writeWithDirs(
+      path.join(dir, "opencode.json"),
+      JSON.stringify({ agent: { old: { tools: { bash: false } } } }),
+    )
+    const before = yield* Config.use.readProject(dir)
+    expect(before).toEqual({ file: "opencode.json", config: { agent: { old: { tools: { bash: false } } } } })
+    const patch = ConfigParse.schema(ConfigV1.Info, { agent: { reviewer: { mode: "subagent" } } }, "test:config")
+    const after = yield* Config.use.updateProject(dir, patch)
+    expect(after.file).toBe("opencode.json")
+    expect(after.config.agent).toEqual({ reviewer: { mode: "subagent" } })
+  }),
+)
+
+it.instance("keeps comments when the project config is jsonc", () =>
+  Effect.gen(function* () {
+    const instance = yield* TestInstance
+    const fs = yield* FSUtil.Service
+    const file = path.join(instance.directory, ".opencode", "opencode.jsonc")
+    yield* fs.writeWithDirs(file, `{\n  // keep me\n  "agent": { "old": {} }\n}\n`)
+    yield* Config.use.update({ agent: { reviewer: { mode: "subagent" } } })
+    const written = yield* fs.readFileString(file)
+    expect(written).toContain("// keep me")
+    expect(ConfigParse.jsonc(written, file)).toMatchObject({ agent: { reviewer: { mode: "subagent" } } })
+    expect(written).not.toContain("old")
+  }),
+)
+
 it.instance("rejects a project update with native agent permissions without writing it", () =>
   Effect.gen(function* () {
     const instance = yield* TestInstance
     const fs = yield* FSUtil.Service
-    const file = path.join(instance.directory, "config.json")
+    const file = path.join(instance.directory, "opencode.json")
     const before = JSON.stringify({ agents: { reviewer: { permissions: [] } } })
     yield* fs.writeFileString(file, before)
     const exit = yield* Effect.exit(Config.use.update({ username: "changed" }))
@@ -1084,7 +1131,7 @@ it.instance("updates config and writes to file", () =>
       svc.update(ConfigParse.schema(ConfigV1.Info, { model: "updated/model" }, "test:config")),
     )
 
-    const writtenConfig = yield* FSUtil.use.readJson(path.join(test.directory, "config.json"))
+    const writtenConfig = yield* FSUtil.use.readJson(path.join(test.directory, ".opencode", "opencode.json"))
     expect(writtenConfig).toMatchObject({ model: "updated/model" })
   }),
 )
